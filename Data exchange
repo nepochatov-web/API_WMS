@@ -1,0 +1,1627 @@
+# Обмен данными WMS3.4 - 
+
+## Глоссарий
+* WMS - Система управления складом
+* ERP - Система планирования ресурсов предприятия (*1C)
+* Импорт - процесс передачи данных в систему WMS
+* Экспорт - процесс передачи данных из системы WMS
+* Справочник - таблица в БД WMS
+* RabbitMQ - брокер сообщений на основе стандарта AMQP
+* Request - запрос к системе
+* Response - ответ от системы
+
+
+## Введение
+### Ошибки и информационные сообщения
+Приложение в любой момент может ответить сообщением с ключом `error`
+и описанием внутри. 
+
+> Ошибки которым не присвоен описательный текст
+> обычно возращаются с текстом по умолчанию `Server critical exception`
+
+Пример ошибки:
+```json
+{
+  "error": "In the content so much free quantity does not exist."
+}
+```
+
+Пример ошибки с параметрами:
+```json
+{
+  "error": {
+    "text": "Path not found (:var)",
+    "prepare": {
+      "var": "/dsada"
+    }
+  }
+}
+```
+
+Так же возможен ответ информационным сообщением с ключом `message`, которое
+внутри содержит описание и информирует о успешной обработке запроса
+```json
+{
+  "message": "You have successfully updated"
+}
+```
+
+## Аутентификация
+- METHOD: POST
+- PATH: /login/
+- BODY: `auth-body`
+```json
+{
+  "login": "EXT-LOGIN-01",
+  "password": "EXT-PASS-01"
+}
+```
+- RESPONSE: `auth-success`
+```json
+{
+  "login": "EXT-LOGIN-01",
+  "session": "SOME_SESSION_ID"
+}
+```
+
+> Сессионый идентификатор применяется в REQUEST->RESPONSE запросах
+> для наделения пользователя надлежайшими правами
+> 
+> Для дальнейших запросов указывать в параметрах заголовка `session_key` = RESPONSE.session
+
+## Обновление справочников (CUD)
+Общий маршрут для обновления справочников выглядит так: `/unit/@TABLE/@METHOD/`
+- @TABLE - Таблица/справочник который необходим
+    - product - Товар
+    - product_brand - Бренд товара
+    - product_group - Группа товара
+    - product_kind_of - Вид товара
+    - product_barcode - ШК товара
+    - cell - Ячейки
+- @METHOD - Действие над этим справочник
+    - cu - Операция создания или изменения
+    - d - Операция удаления
+
+Например, для того что бы обновить или добавить данные в справочник продуктов
+нужно указать маршрут `/unit/product/cu/`
+
+### Общий подход для операций обновления или создания
+В теле сообщения указываются допустимые ключи и их новые значения для
+обновляемой таблицы.
+> Допустимость ключей и значений определяется в приложении 1
+
+Пример создания записи в справочнике ШК товаров:
+- METHOD: POST
+- PATH: /unit/product_barcode/cu/
+- BODY: `unit-product_barcode-body`
+```json
+{
+  "product_barcode_id": "PB-P01-01",
+  "product_barcode_title": "012345678912",
+  "product_barcode_product_id": "P01"
+}
+```
+- RESPONSE: `unit-success`
+```json
+{
+  "message": "Your operation was successful."
+}
+```
+Пример создания записи в справочнике Товары:
+- METHOD: POST
+- PATH: /unit/product/cu/
+- BODY: `unit-product-body`
+```json
+{
+  "product_id": "4",
+  "product_title": "Product 4",
+  "product_full_name": "Товар 4",
+  "product_art": "art4",
+  "product_product_brand_id": "1",
+  "product_product_kind_of_id": "2",
+  "product_product_unit_id": "222",
+  "product_x": "10",
+  "product_y": "8",
+  "product_z": "8.7",
+  "product_m": "2.5",
+  "product_specific_amount": "1",
+  "product_coeff_leave": "0.85",
+  "product_coeff_coming": "0.85",
+  "product_expiration_days": "305"
+}
+```
+- RESPONSE: `unit-success`
+```json
+{
+  "message": "Your operation was successful."
+}
+```
+
+
+Так же возможна множественная обработка данных в контексте одного запроса.
+> Вся операция производится в одной транзакции и в случае ошибки отменяется полностью
+
+Пример отправки коллекции для создания записей в справочнике ШК:
+- METHOD: POST
+- PATH: /unit/product_barcode/cu/
+- BODY: `unit-product_barcode-body`
+```json
+[
+  {
+    "product_barcode_id": "PB-P01-01",
+    "product_barcode_title": "012345678912",
+    "product_barcode_product_id": "P01"
+  },
+  {
+    "product_barcode_id": "PB-P01-02",
+    "product_barcode_title": "X12345678912",
+    "product_barcode_product_id": "P01"
+  }
+]
+```
+- RESPONSE: `unit-success`
+```json
+{
+  "message": "Your operation was successful."
+}
+```
+
+Пример отправки коллекции для создания записей в справочнике Товары:
+- METHOD: POST
+- PATH: /unit/product/cu/
+- BODY: `unit-product-body`
+```json
+[
+  {
+    "product_id": "5",
+    "product_title": "Product 5",
+    "product_full_name": "Товар 5",
+    "product_art": "art5",
+    "product_product_brand_id": "1",
+    "product_product_kind_of_id": "2",
+    "product_product_unit_id": "222",
+    "product_x": "10",
+    "product_y": "8",
+    "product_z": "8.7",
+    "product_m": "2.5",
+    "product_specific_amount": "1",
+    "product_coeff_leave": "0.85",
+    "product_coeff_coming": "0.85",
+    "product_expiration_days": "305"
+  },
+  {
+    "product_id": "6",
+    "product_title": "Product 6",
+    "product_full_name": "Товар 6",
+    "product_art": "art6",
+    "product_product_brand_id": "1",
+    "product_product_kind_of_id": "2",
+    "product_product_unit_id": "222",
+    "product_x": "10",
+    "product_y": "8",
+    "product_z": "8.7",
+    "product_m": "2.5",
+    "product_specific_amount": "1",
+    "product_coeff_leave": "0.85",
+    "product_coeff_coming": "0.85",
+    "product_expiration_days": "305"
+  }
+]
+```
+- RESPONSE: `unit-success`
+```json
+{
+  "message": "Your operation was successful."
+}
+```
+
+### Общий подход для операций удаления
+В теле сообщения указываются идентификаторы которые 
+уже загружены в систему.
+
+Пример отправки коллекции для удаления записей в справочнике ШК:
+- METHOD: POST
+- PATH: /unit/product_barcode/d/
+- BODY: `unit-d-product_barcode-body`
+```json
+[
+  "PB-P01-01",
+  "PB-P01-02"
+]
+```
+- RESPONSE: `unit-success`
+```json
+{
+  "message": "Your operation was successful."
+}
+```
+
+
+Пример отправки коллекции для удаления записей в справочнике Товары:
+- METHOD: POST
+- PATH: /unit/product/d/
+- BODY: `unit-d-product-body`
+```json
+[
+  "4",
+  "5",
+  "6"
+]
+```
+- RESPONSE: `unit-success`
+```json
+{
+  "message": "Your operation was successful."
+}
+```
+
+
+## Документооборот
+### Общее
+Для всех типов документов применяется общая структура данных
+
+Наименование|Тип|R|Ограничение
+---|---|---|---
+document_id|varchar(72)|+|
+document_document_type_id|varchar(72)|+|document_type
+document_document_mail_id|varchar(72)|-|document_mail_id
+document_title|varchar(255)|+|
+document_comment|varchar(255)|-|
+document_document_legal_person_id|varchar(72)|-|document_legal_person
+document_warehouse_id|varchar(72)|-|warehouse
+document_warehouse_id_from|varchar(72)|-|warehouse
+document_warehouse_id_to|varchar(72)|-|warehouse
+document_zone_id_from|varchar(72)|-|zone
+document_zone_id_to|varchar(72)|-|zone
+document_counterparty_id_from|varchar(72)|-|counterparty
+document_counterparty_id_to|varchar(72)|-|counterparty
+document_user_id|varchar(72)|-|user
+items|array(document_det)|+|
+v_document_counterparty|object(counterparty)|+|
+
+Наименование|Тип|R|Ограничение
+---|---|---|---
+document_det_product_id|varchar(72)|+|product
+document_det_amount|float unsigned|+|
+
+### Приходная 
+На основании данного типа документов выполняются процессы (Приёмка-Размещение)
+> document_document_type_id = 1
+
+Пример:
+- METHOD: POST
+- PATH: /document/coming/
+- BODY: `doc-acceptance-body`
+```json
+{
+  "document_id": "DOC_AC_01",
+  "document_document_type_id": "1",
+  "document_comment": "Without commentary",
+  "document_document_legal_person_id": "DLP_01",
+  "document_title": "Acceptance 01",
+
+  "document_warehouse_id": "MAIN",
+
+  "items": [
+    {
+      "document_det_product_id": "P01",
+      "document_det_amount": 10
+    },
+    {
+      "document_det_product_id": "P02",
+      "document_det_amount": 12.5
+    }
+  ]
+}
+```
+- RESPONSE: `doc-success`
+```json
+{
+  "message": "Your operation was successful."
+}
+```
+
+### Расходная
+На основании данного типа документов выполняются процессы (Подбор-Отгрузка)
+> document_document_type_id = 2
+> 
+> **Данный тип документа не рекомендуется к использованию**
+
+Пример:
+- METHOD: POST
+- PATH: `/document/leave/`
+- BODY: `doc-selection-body`
+```json
+{
+  "document_id": "DOC_SE_01",
+  "document_document_type_id": "2",
+  "document_comment": "Without commentary",
+  "document_counterparty_id_to": "WH_TO_01",
+  "document_title": "Selection 01",
+
+  "document_cost": "1000.04",
+  "document_date": "2020-03-01",
+  "document_document_service_type_id": "WarehouseWarehouse",
+  "document_document_payment_method_id": "NonCash",
+  "document_document_payer_type_id": "Sender",
+
+  "document_warehouse_id": "MAIN",
+
+  "items": [
+    {
+      "document_det_product_id": "P01",
+      "document_det_amount": 5
+    },
+    {
+      "document_det_product_id": "P02",
+      "document_det_amount": 10
+    }
+  ]
+}
+```
+- RESPONSE: `doc-success`
+```json
+{
+  "message": "Your operation was successful."
+}
+```
+
+### Расходная накладная (Самовывоз)
+> document_document_type_id = LEAVE_SELF
+
+Пример:
+- METHOD: POST
+- PATH: `/document/leave/`
+- BODY: `doc-selection-body`
+```json
+{
+  "document_id": "DOC_SE_01",
+  "document_document_type_id": "LEAVE_SELF",
+  "document_comment": "Without commentary",
+  "document_counterparty_id_to": "WH_TO_01",
+  "document_title": "Selection 01",
+  "document_warehouse_id": "MAIN",
+
+  "items": [
+    {
+      "document_det_product_id": "P01",
+      "document_det_amount": 5
+    },
+    {
+      "document_det_product_id": "P02",
+      "document_det_amount": 10
+    }
+  ]
+}
+```
+- RESPONSE: `doc-success`
+```json
+{
+  "message": "Your operation was successful."
+}
+```
+
+
+
+### Расходная накладная (Доставка)
+> document_document_type_id = LEAVE_DELIVERY
+
+Пример:
+- METHOD: POST
+- PATH: `/document/leave/`
+- BODY: `doc-selection-body`
+```json
+{
+  "document_id": "DOC_SE_01",
+  "document_document_type_id": "LEAVE_DELIVERY",
+  "document_comment": "Without commentary",
+  "document_counterparty_id_to": "WH_TO_01",
+  "document_title": "Selection 01",
+  "document_warehouse_id": "MAIN",
+
+  "v_document_counterparty": {
+      "counterparty_f": "Иванов",
+      "counterparty_i": "Иван",
+      "counterparty_o": "Иванович",
+      "counterparty_phone_number": "380661234561",
+      "counterparty_address": "Київська, Київ, вул. Автозаводська, 5, 66"
+  },
+
+  "items": [
+    {
+      "document_det_product_id": "P01",
+      "document_det_amount": 5
+    },
+    {
+      "document_det_product_id": "P02",
+      "document_det_amount": 10
+    }
+  ]
+}
+```
+- RESPONSE: `doc-success`
+```json
+{
+  "message": "Your operation was successful."
+}
+```
+
+### Расходная накладная (Возврат поставщику)
+> document_document_type_id = 3
+
+Пример:
+- METHOD: POST
+- PATH: `/document/leave/`
+- BODY: `doc-selection-body`
+```json
+{
+  "document_id": "DOC_R_01",
+  "document_document_type_id": "3",
+  "v_document_1c_document_type_id": "RETURN_TO_SUPPLIER",
+  "document_document_legal_person_id": "a123",
+  "document_comment": "Without commentary",
+  "document_title": "RETURN 01",
+  "document_warehouse_id": "24bf5831-9c58-11eb-9d3a-000c291b455c",
+
+  "items": [
+    {
+      "document_det_product_id": "P01",
+      "document_det_defect" : 0,
+      "document_det_expiration_date": null,
+      "document_det_batch_code": "53.90",
+      "document_det_amount": 5
+    },
+    {
+      "document_det_product_id": "P02",
+      "document_det_defect" : 1,
+      "document_det_expiration_date": "2021-10-22",
+      "document_det_batch_code": null,
+      "document_det_amount": 10.2
+    }
+  ]
+}
+```
+- RESPONSE: `doc-success`
+```json
+{
+  "message": "Your operation was successful."
+}
+```
+
+### Документ перемещения между филиалами
+> document_document_type_id = MOVEMENT_WAREHOUSE
+>
+> В данный момент доступны только 2 склада **(MAIN, WHOUSE2432)**
+
+Пример:
+- METHOD: POST
+- PATH: `/document/MovementWarehouse/`
+- BODY: `doc-movement-zn-body`
+
+```json
+{
+  "document_id": "DOC_MV_01",
+  "document_document_type_id": "MOVEMENT_WAREHOUSE",
+  "document_title": "Movement 01",
+  "document_comment": "Without commentary",
+  "document_warehouse_id_from": "MAIN",
+  "document_warehouse_id_to": "WHOUSE2432",
+  "items": [
+    {
+      "document_det_product_id": "P01",
+      "document_det_amount": 5
+    },
+    {
+      "document_det_product_id": "P02",
+      "document_det_amount": 10
+    }
+  ]
+}
+```
+
+- RESPONSE: `doc-success`
+```json
+{
+  "message": "Your operation was successful."
+}
+```
+
+### Документ отгрузки документов доставки
+> document_document_type_id = 'SHIPMENT_DELIVERY'
+
+
+Пример:
+- METHOD: POST
+- PATH: `/document/shipmentDelivery/`
+- BODY: `doc-selection-body`
+
+```json
+{
+  "document_id": "DOC_SH_01",
+  "document_document_type_id": "SHIPMENT_DELIVERY",
+  "document_comment": "Without commentary",
+  "document_title": "Shipment 01",
+  "document_warehouse_id": "12345",
+  "v_document_1c_document_type_id": "SHIPMENT_DELIVERY",
+  
+  "route": {
+    "route_id": "R01",
+    "route_number": "R1234",
+    "route_title": "Route 01",
+    "route_driver": "Ivanov Ivan Ivanovich"
+  },
+
+  "items": [
+    {
+      "document_id": "D01"
+    },
+    {
+      "document_id": "D02"
+    }
+  ]
+}
+```
+
+### Расходная. Изменения типа документа
+> Возможные типы документов:
+> * LEAVE_SELF
+> * LEAVE_MAIL
+> * LEAVE_DELIVERY
+
+Пример:
+- METHOD: POST
+- PATH: `/document/leave/changeType/`
+- BODY: `doc-leave-change-type-body`
+```json
+{
+  "document_id": "DOC_SE_01",
+  "document_document_type_id": "LEAVE_SELF"
+}
+```
+- RESPONSE: `doc-success`
+```json
+{
+  "message": "Your operation was successful."
+}
+```
+
+
+## Документооборот (дополнительно)
+
+### Контрагенты (Получатели)
+Контрагенты являются частью документооборота, но работают по принципу обычных справочников `Справочники (CUD)`
+
+ Пример:
+ - METHOD: POST
+ - PATH: /unit/counterparty/cu/
+ - BODY: `unit-counterparty-body`
+```json
+[
+  {
+    "counterparty_id": "WH_TO_01",
+    "counterparty_counterparty_type_id": "INDIVIDUAL_PERSON",
+    "counterparty_title": "Клиент 01",
+    "counterparty_f": "Иванов",
+    "counterparty_i": "Иван",
+    "counterparty_o": "Иванович",
+    "counterparty_phone_number": "380661234561",
+    "counterparty_region": "Київська",
+    "counterparty_city": "Київ",
+    "counterparty_counterparty_warehouse_id": "39931b80-e1c2-11e3-8c4a-0050568002cf",
+    "counterparty_street": "вул. Автозаводська",
+    "counterparty_building": "5",
+    "counterparty_flat": "66"
+  }
+]
+```
+ - RESPONSE: `doc-success`
+ ```json
+ {
+   "message": "Your operation was successful."
+ }
+ ```
+
+
+### Расходная. Изменения заголовка документа
+> Возможные типы документов:
+> * LEAVE_SELF
+> * LEAVE_MAIL
+> * LEAVE_DELIVERY
+
+Пример:
+- METHOD: POST
+- PATH: `/document/leave/updateHeader/`
+- BODY: `doc-leave-update-header-body`
+```json
+{
+  "document_id": "DOC_SE_01",
+  "document_document_type_id": "LEAVE_MAIL",
+  "document_comment": "Without commentary",
+  "document_counterparty_id_to": "WH_TO_01",
+  "document_title": "Selection 01",
+  "document_cost": "1000.04",
+  "document_date": "2020-03-01",
+  "document_document_service_type_id": "WarehouseWarehouse",
+  "document_document_payment_method_id": "NonCash",
+  "document_document_payer_type_id": "Sender"
+}
+```
+- RESPONSE: `doc-success`
+```json
+{
+  "message": "Your operation was successful."
+}
+```
+
+### Расходная. Сопроводительные печатные формы из ERP
+
+Общая структура запроса:
+ 
+Наименование|Тип|R|Ограничение
+---|---|---|---
+document_id|varchar(72)|+|document
+v_document_base64|array(v_document_base64)|+|
+
+Структура массива `v_document_base64`:
+
+Наименование|Тип|R|Ограничение|Комментарий
+---|---|---|---
+v_base64|BASE64(PDF)|+|| Закодированный PDF документ
+v_amount|integer unsigned|+|| Количество копий для печати
+
+Пример:
+- METHOD: POST
+- PATH: `/document/leave/printDoc/`
+- BODY: `doc-leave-print-doc-body`
+```json
+{
+  "document_id": "8f547118-8f65-11ea-bb15-00155d080527",
+  "v_document_base64": [
+    {
+      "v_base64": "<BASE64>",
+      "v_amount": "3"
+    },
+    {
+      "v_base64": "<BASE64>",
+      "v_amount": "2"
+    }
+  ]
+}
+```
+- RESPONSE: `doc-success`
+```json
+{
+  "message": "Your operation was successful."
+}
+```
+
+### Инвентаризация по товару.
+Пример:
+- METHOD: POST
+- PATH: `/document/inventoryProduct/`
+- BODY: `doc-inventory-product`
+```json
+{
+  "document_id": "IN_P_01",
+  "document_document_type_id": "INVENTORY_PRODUCT",
+  "document_comment": "Without commentary",
+  "document_title": "Inventory product 01",
+  "document_warehouse_id": "MAIN",
+
+  "items": [
+    {
+      "document_det_product_id": "P01"
+    },
+    {
+      "document_det_product_id": "P02"
+    }
+  ]
+}
+```
+- RESPONSE: `doc-success`
+```json
+{
+  "message": "Your operation was successful."
+}
+```
+
+### Остатки на складе
+
+Пример:
+- METHOD: POST
+- PATH: `/product/stockBalances/`
+- BODY: `product-stock-balances`
+```json
+{
+  "warehouse_id": "00000000-0000-0000-0000-000000000000"
+}
+```
+- RESPONSE:
+```json
+[
+  {
+    "v_product_id": "P01",
+    "v_amount": "58.0000",
+    "v_defect": "0",
+    "v_expiration_date": "2022-12-31",
+    "v_batch_code": null
+  },
+  {
+    "v_product_id": "P01",
+    "v_amount": "1.5000",
+    "v_defect": "1",
+    "v_expiration_date": "2022-12-31",
+    "v_batch_code": null
+  },
+  {
+    "v_product_id": "P02",
+    "v_amount": "42.0000",
+    "v_defect": "0",
+    "v_expiration_date": null,
+    "v_batch_code": "54.50"
+  }
+]
+```
+
+
+### Юридические лица. Расходная накладная
+> document_document_type_id = LEAVE_MAIL
+>
+> Новые поля
+> > "v_title": "ООО Агромаш", - Название юридического лица
+> >
+> > "v_edrpou": "35912126", - Номер юридического лица
+
+Пример:
+- METHOD: POST
+- PATH: `/document/leave/`
+- BODY: `doc-selection-body`
+```json
+{
+  "document_id": "DOC_SE_01",
+  "document_document_type_id": "LEAVE_MAIL",
+  "document_document_mail_id": "MAIL_NP",
+  "document_comment": "Without commentary",
+  "document_counterparty_id_to": "WH_TO_01",
+  "document_title": "Selection 01",
+
+  "document_cost": "1000.04",
+  "document_date": "2020-03-01",
+  "document_document_service_type_id": "WarehouseWarehouse",
+  "document_document_payment_method_id": "NonCash",
+  "document_document_payer_type_id": "Sender",
+
+  "v_document_counterparty": {
+      "v_title": "ООО Агромаш",
+      "v_edrpou": "35912126",
+
+      "counterparty_f": "Иванов",
+      "counterparty_i": "Иван",
+      "counterparty_o": "Иванович",
+      "counterparty_phone_number": "380661234561",
+      "counterparty_counterparty_warehouse_id": "39931b80-e1c2-11e3-8c4a-0050568002cf"
+  },
+
+  "document_warehouse_id": "MAIN",
+  "items": [
+    {
+      "document_det_product_id": "P01",
+      "document_det_amount": 5
+    },
+    {
+      "document_det_product_id": "P02",
+      "document_det_amount": 10
+    }
+  ]
+}
+```
+
+## Мобильные процессы (примеры)
+Описание способов взаимодействия с мобильными процессами
+
+### Общее
+Для всех типов задач применяется общая структура данных
+
+Структура v:
+
+Наименование|Тип|R|Ограничение
+---|---|---|---
+v_task_id|varchar(72)|-|task
+v_document_id|varchar(72)|+|document
+v_document_1c_document_type_id|varchar(72)|+|1c_document_type
+v_document_type_id|varchar(72)|+|document_type
+v_warehouse_id|varchar(72)|+|warehouse
+items|array(v_det)|+|
+
+Структура v_det:
+
+Наименование|Тип|R|Ограничение
+---|---|---|---
+v_product_id|varchar(72)|+|product
+v_amount_task|FLOAT UNSIGNED|+|
+v_amount_fact|FLOAT UNSIGNED|+|
+v_defect|boolean|+|
+v_batch_code|varchar(72)|+|
+v_expiration_date|varchar(72)|+|формат YYYY-DD-MM
+
+### Приёмка экспорт
+
+
+- METHOD: POST
+- PATH: `/api/mobile/Acceptance/`
+- BODY: `mob-acceptance-body`
+```json
+{
+  "v_task_id": "T_DOC_AC_01",
+  "v_document_id": "DOC_AC_01",
+  "v_document_1c_document_type_id": "COMING_DELIVERY",
+  "v_document_type_id": "1",
+  "v_warehouse_id": "00000000-0000-0000-0000-000000000000",
+  "items": [
+    {
+      "v_product_id": "P01",
+      "v_amount_task": "34",
+      "v_amount_fact": "56",
+      "v_defect": "0",
+      "v_batch_code": "34.50",
+      "v_expiration_date": null
+    },
+    {
+      "v_product_id": "P02",
+      "v_amount_task": "38",
+      "v_amount_fact": "56",
+      "v_defect": "0",
+      "v_batch_code": null,
+      "v_expiration_date": "2022-02-22"
+    }
+  ]
+}
+```
+
+### Размещение экспорт
+- METHOD: POST
+- PATH: `/api/mobile/Placement/`
+- BODY: `mob-placement-body`
+```json
+{
+  "v_task_id": "T_DOC_AC_01",
+  "v_document_id": "DOC_AC_01",
+  "v_document_1c_document_type_id": "COMING_DELIVERY",
+  "v_document_type_id": "1",
+  "v_warehouse_id": "00000000-0000-0000-0000-000000000000",
+  "items": [
+    {
+      "v_product_id": "P01",
+      "v_amount_task": "34",
+      "v_amount_fact": "56",
+      "v_defect": "0",
+      "v_batch_code": "34.50",
+      "v_expiration_date": null
+    },
+    {
+      "v_product_id": "P02",
+      "v_amount_task": "38",
+      "v_amount_fact": "56",
+      "v_defect": "0",
+      "v_batch_code": null,
+      "v_expiration_date": "2022-02-22"
+    }
+  ]
+}
+```
+
+### Размещение частями экспорт
+
+
+- METHOD: POST
+- PATH: `/api/mobile/PlacementPart/`
+- BODY: `mob-placement-body`
+```json
+{
+  "v_task_id": "T_DOC_AC_01",
+  "v_document_id": "DOC_AC_01",
+  "v_document_1c_document_type_id": "COMING_DELIVERY",
+  "v_document_type_id": "1",
+  "v_warehouse_id": "00000000-0000-0000-0000-000000000000",
+  "items": [
+    {
+      "v_product_id": "P01",
+      "v_amount_task": "34",
+      "v_amount_fact": "56",
+      "v_defect": "0",
+      "v_batch_code": "34.50",
+      "v_expiration_date": null
+    },
+    {
+      "v_product_id": "P02",
+      "v_amount_task": "38",
+      "v_amount_fact": "56",
+      "v_defect": "0",
+      "v_batch_code": null,
+      "v_expiration_date": "2022-02-22"
+    }
+  ]
+}
+```
+
+### Подбор экспорт
+
+Пример:
+- METHOD: POST
+- PATH: `/api/mobile/Selection/`
+- BODY: `mob-selection-body`
+```json
+{
+  "v_task_id": "T_DOC_AC_01",
+  "v_document_id": "DOC_AC_01",
+  "v_document_1c_document_type_id": "LEAVE_DELIVERY",
+  "v_document_type_id": "LEAVE_DELIVERY",
+  "v_warehouse_id": "00000000-0000-0000-0000-000000000000",
+  "items": [
+    {
+      "v_product_id": "P01",
+      "v_amount_task": "34",
+      "v_amount_fact": "56",
+      "v_defect": "0",
+      "v_batch_code": "34.50",
+      "v_expiration_date": null
+    },
+    {
+      "v_product_id": "P02",
+      "v_amount_task": "38",
+      "v_amount_fact": "56",
+      "v_defect": "0",
+      "v_batch_code": null,
+      "v_expiration_date": "2022-02-22"
+    }
+  ]
+}
+```
+
+### Контроль экспорт
+Результат отправляется только по завершению всех заданий контроля (по документу).
+Данный результат можно использовать для синхронизации со статусами ERP 
+(документ отобран, есть разница при подборе).
+>Отправляется только для документов с document_type_id: `LEAVE_DELIVERY`
+
+Пример:
+- METHOD: POST
+- PATH: `/api/mobile/Control/`
+- BODY: `mob-control-body`
+```json
+{
+  "v_task_id": "T_DOC_AC_01",
+  "v_document_id": "DOC_AC_01",
+  "v_document_1c_document_type_id": "LEAVE_DELIVERY",
+  "v_document_type_id": "LEAVE_DELIVERY",
+  "v_warehouse_id": "00000000-0000-0000-0000-000000000000",
+  "items": [
+    {
+      "v_product_id": "P01",
+      "v_amount_task": "56",
+      "v_amount_fact": "56",
+      "v_defect": "0",
+      "v_batch_code": "34.50",
+      "v_expiration_date": null
+    },
+    {
+      "v_product_id": "P02",
+      "v_amount_task": "56",
+      "v_amount_fact": "56",
+      "v_defect": "0",
+      "v_batch_code": null,
+      "v_expiration_date": "2022-02-22"
+    }
+  ]
+}
+```
+
+### Отгрузка
+>Отправляется для расходных документов с document_type_id: `2`, `LEAVE_MAIL`, `LEAVE_SELF`
+
+Пример:
+- METHOD: POST
+- PATH: `/api/mobile/Shipment/`
+- BODY: `mob-shipment-body`
+```json
+{
+  "v_task_id": "T_DOC_AC_01",
+  "v_document_id": "DOC_AC_01",
+  "v_document_1c_document_type_id": "MOVEMENT_WAREHOUSE_OUT",
+  "v_document_type_id": "2",
+  "v_warehouse_id": "00000000-0000-0000-0000-000000000000",
+  "items": [
+    {
+      "v_product_id": "P01",
+      "v_amount_task": "56",
+      "v_amount_fact": "56",
+      "v_defect": "0",
+      "v_batch_code": "34.50",
+      "v_expiration_date": null
+    },
+    {
+      "v_product_id": "P02",
+      "v_amount_task": "56",
+      "v_amount_fact": "56",
+      "v_defect": "0",
+      "v_batch_code": null,
+      "v_expiration_date": "2022-02-22"
+    }
+  ]
+}
+```
+
+### Ивентаризация экспорт
+Пример:
+- METHOD: POST
+- PATH: `/api/mobile/Inventory/`
+- BODY: `mob-inventory-body`
+```json
+{
+  "v_task_id": "T_DOC_AC_01",
+  "v_document_type_id": "INVENTORY",
+  "v_document_1c_document_type_id": "INVENTORY",
+  "v_warehouse_id": "00000000-0000-0000-0000-000000000000",
+  "items": [
+    {
+      "v_product_id": "P01",
+      "v_amount_task": "56",
+      "v_amount_fact": "56",
+      "v_defect": "0",
+      "v_batch_code": "34.50",
+      "v_expiration_date": null
+    },
+    {
+      "v_product_id": "P02",
+      "v_amount_task": "56",
+      "v_amount_fact": "56",
+      "v_defect": "0",
+      "v_batch_code": null,
+      "v_expiration_date": "2022-02-22"
+    }
+  ]
+}
+```
+
+### Полная инвентаризация. Экспорт
+Пример:
+- METHOD: POST
+- PATH: `/api/mobile/InventoryAll/`
+- BODY: `mob-inventory-all-body`
+```json
+{
+  "v_task_id": "T_DOC_AC_01",
+  "v_document_type_id": "INVENTORY_ALL",
+  "v_document_1c_document_type_id": "INVENTORY_ALL",
+  "v_warehouse_id": "00000000-0000-0000-0000-000000000000",
+  "items": [
+    {
+      "v_product_id": "P01",
+      "v_amount_task": "56",
+      "v_amount_fact": "56",
+      "v_defect": "0",
+      "v_batch_code": "34.50",
+      "v_expiration_date": null
+    },
+    {
+      "v_product_id": "P02",
+      "v_amount_task": "56",
+      "v_amount_fact": "56",
+      "v_defect": "0",
+      "v_batch_code": null,
+      "v_expiration_date": "2022-02-22"
+    }
+  ]
+}
+```
+
+### Комплектация
+> Не используется
+
+
+## Обмен данными через брокер сообщений RabbitMQ
+### Общее
+### Структура запроса:
+
+Название|Тип|R
+---|---|---
+request_id|varchar(255)|+
+path|varchar(255)|+
+body|Array / Object / null|+
+
+- request_id - уникальный идентификатор запроса, 
+    применяется для получения ответа на определённый запрос из потока
+- path - маршрут для обращения к определённому обработчику
+- body - тело запроса:
+
+Пример структуры запроса:
+```json
+{
+  "request_id": "<Идентификатор запроса>",
+  "path": "<Вызываемый маршрут>",
+  "body": {
+    "<Тело запроса>": null
+  }
+}
+```
+
+### Структура ответа:
+
+Название|Тип|R
+---|---|---
+response|boolean(true)|+
+request_id|varchar(255)|+
+path|varchar(255)|+
+body|Array / Object / null|+
+
+- request_id - уникальный идентификатор запроса
+- body - тело ответа, приходит всегда
+
+Пример структуры ответа:
+```json
+{
+  "response": true,
+  "request_id": "<Идентификатор запроса>",
+  "path": "<Вызываемый маршрут>",
+  "body": {
+    "<Тело ответа>": null
+  }
+}
+```
+
+## Справочники (CUD)
+Пример запроса на запись:
+```json
+{
+  "request_id": "SOME-GUID-01",
+  "path": "/unit/product_barcode/cu/",
+  "body": [
+    {
+      "product_barcode_id": "PB-P01-01",
+      "product_barcode_title": "012345678912",
+      "product_barcode_product_id": "P01"
+    },
+    {
+      "product_barcode_id": "PB-P01-02",
+      "product_barcode_title": "X12345678912",
+      "product_barcode_product_id": "P01"
+    }
+  ]
+}
+```
+    
+Пример ответа на запись:
+```json
+{
+  "response": true,
+  "request_id": "SOME-GUID-01",
+  "path": "/unit/product_barcode/cu/",
+  "body": {
+    "message": "Your operation was successful."
+  }
+}
+```
+
+## Справочники v2 (CRUD/PSC)
+На все справочники распространяется модель CRUD/PS.
+
+Более подробная информация о методах:
+* `Create` - Создание записи в справочнике
+* `Read` - Чтение конкретной записи в справочнике
+* `Update` - Изменение конкретной записи в справочнике
+* `Delete` - Удаление конкретной записи в справочнике
+* `Page` - Постраничный вывод данных из справочника
+* `Search` - Поиск по конкретным параметрам справочника, 
+и последующий постраничный вывод
+* `Count` - Общее количество записей, с возможностью поиска 
+как в `Search`
+
+Общая схема обращения: `/reference/@NAME/@METHOD/@PARAM/`
+* **@NAME** - Имя таблицы/справочника внутри системы
+* **@METHOD** - 1 из перечисленных выше CRUD/PS
+* **@PARAM** - Идентификатор записи или номер страницы 
+(Не применяется в методе Create)
+
+> Перед начало работы с API необходимо пройти авторизацию и 
+> использовать сессионый ключ для идентификации пользователя 
+
+Пример запроса на чтение:
+```json
+{
+  "request_id": "SOME-GUID-01",
+  "path": "/reference/product/read/1/",
+  "body": null
+}
+```
+    
+Пример ответа на чтение:
+```json
+{
+  "response": true,
+  "request_id": "SOME-GUID-01",
+  "path": "/reference/product/read/1/",
+  "body": {
+    "product_id": "1",
+    "product_product_legal_person_id": "1",
+    "product_title": "TITLE",
+    "product_full_name": "FULL-NAME",
+    "product_art": "art1",
+    "product_product_brand_id": "1",
+    "product_product_kind_of_id": "1",
+    "product_product_unit_id": "1",
+    "product_x": "10",
+    "product_y": "8",
+    "product_z": "8.7",
+    "product_m": "2.5",
+    "product_specific_amount": "1",
+    "product_percent_leave": "0.85",
+    "product_percent_coming": "0.85",
+    "product_expiration_days": "305"
+  }
+}
+```
+
+## Примеры
+### Пример импорта продукта (артикула)
+Отправка на запись:
+```json
+{
+  "response": true,
+  "request_id": "SOME-GUID-01",
+  "path": "/reference/product/create/",
+  "body": {
+    "product_id": "1",
+    "product_product_legal_person_id": "1",
+    "product_title": "TITLE",
+    "product_full_name": "FULL-NAME",
+    "product_art": "art1",
+    "product_product_brand_id": "1",
+    "product_product_kind_of_id": "1",
+    "product_product_unit_id": "1",
+    "product_x": "10",
+    "product_y": "8",
+    "product_z": "8.7",
+    "product_m": "2.5",
+    "product_specific_amount": "1",
+    "product_percent_leave": "0.85",
+    "product_percent_coming": "0.85",
+    "product_expiration_days": "305"
+  }
+}
+```
+
+Положительный ответ:
+```json
+{
+  "response": true,
+  "request_id": "SOME-GUID-01",
+  "path": "/reference/product/create/",
+  "body": {
+    "message": {
+      "text": "Some msg(:var)",
+      "prepare": {
+        "var": "ABC-01"  
+      }   
+    }
+  }
+}
+```
+
+Отрицательный ответ:
+```json
+{
+  "response": true,
+  "request_id": "SOME-GUID-01",
+  "path": "/reference/product/create/",
+  "body": {
+    "error": "<Some msg or Object>"
+  }
+}
+```
+
+### Пример импорта документов
+Структура document:
+
+Название|Тип|Обязательность|Зависимость
+---|---|---|---
+document_id|varchar(72)+|
+document_title|varchar(255)|+|
+document_barcode|varchar(72)| |
+document_document_type_id|varchar(72)|+|document_type
+items|array(document_det)|+|
+
+Структура document_det:
+
+Название|Тип|Обязательность|Зависимость
+---|---|---|---
+document_det_id|varchar(72)|+|
+document_det_product_id|varchar(72)|+|product_id
+document_det_amount|float unsigned|+|
+document_det_defect|boolean|+|
+
+Отправка на запись:
+```json
+{
+  "request_id": "SOME-GUID-01",
+  "path": "/document/coming/",
+  "body": {
+    "document_id": "DOC_AC_01",
+    "document_document_type_id": "1",
+    "document_comment": "Without commentary",
+    "document_document_legal_person_id": "DLP_01",
+    "document_title": "Acceptance 01",
+    "items": [
+      {
+        "document_det_product_id": "P01",
+        "document_det_amount": 10
+      },
+      {
+        "document_det_product_id": "P02",
+        "document_det_amount": 12.5
+      }
+    ]
+  }
+}
+```
+
+Положительный ответ:
+```json
+{
+  "request_id": "SOME-GUID-01",
+  "body": {
+    "message": "<Some msg or Object>"
+  }
+}
+```
+
+Отрицательный ответ:
+```json
+{
+  "request_id": "SOME-GUID-01",
+  "body": {
+    "error": "<Some msg or Object>"
+  }
+}
+```
+
+## Структуры справочников
+### cell
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+cell_id|varchar(72)|-||Идентификатор ячейки
+cell_zone_id|varchar(72)|-|zone|Идентификатор зоны
+cell_cell_class_id|varchar(72)|-|cell_class|Идентификатор класса ячейки
+cell_barcode|varchar(72)|-||ШК ячейки
+cell_cell_position_id|varchar(72)|-|cell_position|Идентификатор позиции ячейки
+cell_block|tinyint(3) unsigned|+||Блокировка ячейки
+
+### cell_class
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+cell_class_id|varchar(72)|-||Идентификатор класса ячейки
+cell_class_title|varchar(255)|-||Наименование класса ячейки
+cell_class_x|float|+||Ширина класса ячейки
+cell_class_y|float|+||Высота класса ячейки
+cell_class_z|float|+||Глубина класса ячейки
+cell_class_m|float|+||Максимальный вес класса ячейки
+cell_class_limit|bigint(20) unsigned|-||Максимальное количество единиц класса ячейки
+
+### counterparty
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+counterparty_id|varchar(72)|-||Идентификатор контрагента
+counterparty_counterparty_type_id|varchar(72)|-|counterparty_type|Тип контрагента
+counterparty_title|varchar(255)|-||Наименование контрагента (для юр.лиц)
+counterparty_f|varchar(255)|-||Фамилия контрагента
+counterparty_i|varchar(255)|-||Имя контрагента
+counterparty_o|varchar(255)|-||Отчество контрагента
+counterparty_phone_number|varchar(255)|-||Мобильный номер контрагента
+counterparty_region|varchar(255)|-||Регион контрагента
+counterparty_city|varchar(255)|-||Город контрагента
+counterparty_street|varchar(255)|-||Адрес контрагента
+counterparty_building|varchar(255)|-||Номер дома контрагента
+counterparty_flat|varchar(255)|-||Квартира контрагента
+counterparty_counterparty_warehouse_id|varchar(72)|-||Идентификатор склада почтового оператора
+
+### counterparty_warehouse
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+counterparty_warehouse_id|varchar(72)|-||Идентификатор склада почтового оператора
+counterparty_warehouse_title|varchar(255)|-||Наименование склада почтового адреса
+
+### document
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+document_id|varchar(72)|-||Идентификатор документа
+document_document_type_id|varchar(72)|-|document_type|Идентификатор типа документа
+document_title|varchar(255)|-||Наименование документа
+document_warehouse_id|varchar(72)|-|warehouse|Идентификатор склада
+document_warehouse_id_from|varchar(72)|-|warehouse|Идентификатор склада откуда
+document_warehouse_id_to|varchar(72)|-|warehouse|Идентификатор склада куда
+document_zone_id_from|varchar(72)|-|zone|Идентификатор зоны склада откуда
+document_zone_id_to|varchar(72)|-|zone|Идентификатор зоны склада куда
+document_barcode|varchar(72)|-||ШК документа
+document_comment|text|-||Комментарий к документу
+document_counterparty_id_from|varchar(72)|-|counterparty|Контрагент откуда
+document_counterparty_id_to|varchar(72)|-|counterparty|Контрагент куда
+document_cost|varchar(255)|-||Объявленная стоимость содержимого документа
+document_date|varchar(255)|-||Дата документа
+document_document_service_type_id|varchar(72)|-|document_service_type|Тип доставки в документе
+document_document_payment_method_id|varchar(72)|-|document_payment_method|Тип оплаты в документе
+document_document_payer_type_id|varchar(72)|-|document_payer_type|Тип плательщика в документе
+document_document_cargo_type_id|varchar(72)|-|document_cargo_type|Тип груза в документе
+
+### document_det
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+document_det_id|varchar(72)|-||Идентификатор детализации документа
+document_det_document_id|varchar(72)|-|document|Идентификатор документа
+document_det_date_time|datetime|-||Дата и время детализации документа
+document_det_product_id|varchar(72)|-|product|Идентификатор продукта
+document_det_tare_id|varchar(72)|-|tare|Идентификатор контейнера
+document_det_amount|float unsigned|-||Количество продукта детализации документа
+document_det_defect|tinyint(1)|+||Признак брака детализации документа
+
+### document_legal_person
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+document_legal_person_id|varchar(72)|-||Идентификатор юр.лица
+document_legal_person_title|varchar(255)|-||Наименование юр.лица
+
+
+
+### product
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+product_id|varchar(72)|-||Идентификатор продукта
+product_product_legal_person_id|varchar(72)|-|product_legal_person|Идентификатор контрагента
+product_title|varchar(255)|-||Наименование продукта
+product_full_name|varchar(255)|-||Полное наименование продукта
+product_art|varchar(72)|-||Артикул продукта
+product_product_brand_id|varchar(72)|-|product_brand|Идентификатор бренда
+product_product_kind_of_id|varchar(72)|-|product_kind_of|Идентификатор вида продукта
+product_x|float unsigned|+||Ширина продукта
+product_y|float unsigned|+||Высота продукта
+product_z|float unsigned|+||Длинна продукта
+product_m|float unsigned|+||Вес продукта
+product_product_unit_id|varchar(72)|-||Идентификатор единицы измерения продукта
+product_specific_amount|float unsigned|-||Минимальное количество на единицу товара (справедливо для "весового" товара, который подбирается штучно)
+product_percent_leave|double unsigned|-||Процент сроков годности для расходов
+product_percent_coming|double unsigned|-||Процент сроков годности для приемки
+product_expiration_days|int(11) unsigned|-||Срок хранения общий в днях
+
+
+### product_barcode
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+product_barcode_id|varchar(72)|-||Идентификатор ШК продукта
+product_barcode_title|varchar(72)|-||ШК продукта
+product_barcode_product_id|varchar(72)|-|product|Идентификатор продукта
+
+### product_brand
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+product_brand_id|varchar(72)|-||Идентификатор бренда
+product_brand_title|varchar(255)|-||Наименование бренда
+
+### product_det
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+product_det_id|varchar(72)|-|product|Идентификатор продукта (итогового)
+product_det_product_id|varchar(72)|-|product|Идентификатор продукта (из чего состоит)
+product_det_amount|float unsigned|-||Количество (из чего состоит)
+
+### product_kind_of
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+product_kind_of_id|varchar(72)|-||Идентификатор видов продукта
+product_kind_of_title|varchar(255)|-||Наименование видов продукта
+product_kind_of_product_type_id|varchar(72)|+|product_type|Идентификатор типов продукта
+
+### product_type
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+product_type_id|varchar(72)|-||Идентификатор типов продукта
+product_type_title|varchar(255)|-||Наименование типов продукта
+product_type_product_group_id|varchar(72)|+|product_group|Идентификатор группы продукта
+
+### product_group
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+product_group_id|varchar(72)|-||Идентификатор группы продукта
+product_group_title|varchar(255)|-||Наименование группы продукта
+
+### product_group_zone
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+product_group_zone_id|varchar(72)|-||Идентификатор привязки группы к зоне 
+product_group_zone_product_group_id|varchar(72)|-|product_group|Идентификатор группы
+product_group_zone_zone_id|varchar(72)|-|zone|Идентификатор зоны
+
+### product_legal_person
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+product_legal_person_id|varchar(72)|-||Идентификатор контрагента
+product_legal_person_title|varchar(255)|-||Наименование контрагента
+
+
+### product_unit
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+product_unit_id|varchar(72)|+||Идентификатор единицы измерения
+product_unit_title|varchar(255)|+||Наименование единицы измерения
+product_unit_not_allow_fraction|tinyint(1)|-|0 или 1|Не разрешать дробное значение (по-умолчанию 0)
+
+### scheme
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+scheme_id|varchar(72)|-||Идентификатор схемы
+scheme_product_id|varchar(72)|-|product|Идентификатор продукта (итогового)
+
+### scheme_det
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+scheme_det_id|varchar(72)|-||Идентификатор детализации схемы
+scheme_det_scheme_id|varchar(72)|-|scheme|Идентификатор схемы
+scheme_det_product_id|varchar(72)|-|product|Идентификатор продукта (из чего состоит)
+scheme_det_amount|float unsigned|-||Количество (из чего состоит)
+
+### warehouse
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+warehouse_id|varchar(72)|-||Идентификатор склада
+warehouse_title|varchar(255)|-||Наименование склада
+
+### zone
+Наименование|Тип|R|Зависимость|Описание
+---|---|---|---|---
+zone_id|varchar(72)|-||Идентификатор зоны склада
+zone_title|varchar(255)|-||Наименование зоны склада
+zone_zone_type_id|varchar(72)|-|zone_type|Идентификатор типа зоны
+zone_x|bigint(20)|-||Ширина зоны
+zone_y|bigint(20)|-||Высота зоны
+zone_z|bigint(20)|-||Глубина зоны
+zone_warehouse_id|varchar(72)|-|warehouse|Идентификатор склада
+
+
+
+### warehouse
+Значение|Описание
+---|---
+MAIN|Основной (/wms-desktop/)
+WHOUSE2432|Тестовый 2432 (/whouse2432/wms-desktop/)
+
+
+## Приложение
+### RabbitMQ
+Очередя для обмен данными
+* `F_ERP` - ERP -> WMS
+* `F_WMS` - WMS -> ERP
+
+Хост
+- `0.0.0.0`
+- `9100`
+
+Виртуальный хост
+* `qa1`
+
+Пользователь
+* `admin`
+* `password` (для логирования на стороне WMS)
+
+Для запуска слушателя на стороне WMS
+
+    sudo -u www-data php /var/www/html/wms-api/rabbitmq.php
+
+### RabbitMQ (Тестирование механизма)
+запуск эмулятора WMS (приём/передача)
+
+    php /var/www/html/am-test/receive.php 
+
+запуск эмулятора ERP (приём)
+    
+    php /var/www/html/am-test/receive_erp.php 
+
+запуск процедуры эмуляции отправки на WMS
+    
+    php /var/www/html/am-test/send.php
